@@ -5614,24 +5614,29 @@ func RunPostgresListStoredProcedureTest(t *testing.T, ctx context.Context, pool 
 	}
 }
 
-func RunStatementToolsTest(t *testing.T, tools map[string]string) {
+// RunStatementToolsTest invokes each tool with its JSON parameter body and
+// checks that the call succeeds. The output is not checked.
+func RunStatementToolsTest(t *testing.T, tools map[string]string, opts ...ToolExecOption) {
+	config := &ToolExecConfig{}
+	for _, opt := range opts {
+		opt(config)
+	}
+
 	for toolName, paramBody := range tools {
 		t.Run(toolName, func(t *testing.T) {
-			api := fmt.Sprintf("http://127.0.0.1:5000/api/tool/%s/invoke", toolName)
-			req, err := http.NewRequest(http.MethodPost, api, bytes.NewBufferString(paramBody))
-			if err != nil {
-				t.Fatalf("unable to create request: %s", err)
+			var args map[string]any
+			if err := json.Unmarshal([]byte(paramBody), &args); err != nil {
+				t.Fatalf("error parsing parameters %q: %s", paramBody, err)
 			}
-			req.Header.Add("Content-type", "application/json")
-			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				t.Fatalf("unable to send request: %s", err)
-			}
-			defer resp.Body.Close()
 
-			if resp.StatusCode != http.StatusOK {
-				bodyBytes, _ := io.ReadAll(resp.Body)
-				t.Fatalf("response status code is not 200, got %d: %s", resp.StatusCode, string(bodyBytes))
+			statusCode, result, mcpResp := invokeToolForResult(t, toolName, args, config.isMCP)
+			if statusCode != http.StatusOK {
+				t.Fatalf("response status code is not 200, got %d: %s", statusCode, result)
+			}
+			// Over MCP a tool error is returned with HTTP 200, so check for it
+			// separately.
+			if mcpResp != nil && (mcpResp.Error != nil || mcpResp.Result.IsError) {
+				t.Fatalf("tool %s returned an error: %s", toolName, result)
 			}
 		})
 	}
