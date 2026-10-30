@@ -130,7 +130,7 @@ func setupDatalineageResources(t *testing.T, ctx context.Context, client *lineag
 
 	// Teardown function
 	teardown := func(t *testing.T) {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
 		deleteProcessReq := &lineagepb.DeleteProcessRequest{
 			Name: process.GetName(),
