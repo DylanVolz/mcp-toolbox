@@ -90,17 +90,16 @@ func setupDatalineageResources(t *testing.T, ctx context.Context, client *lineag
 	}
 
 	// 2. Create Run
-	tTime, err := time.Parse(time.RFC3339Nano, "2026-01-01T01:01:01.010Z")
-	if err != nil {
-		t.Fatalf("failed to parse start time: %v", err)
-	}
-	startTime := timestamppb.New(tTime)
+	now := time.Now().UTC()
+	startTime := timestamppb.New(now.Add(-1 * time.Minute))
+	endTime := timestamppb.New(now)
 
 	createRunReq := &lineagepb.CreateRunRequest{
 		Parent: process.GetName(),
 		Run: &lineagepb.Run{
 			Name:      fmt.Sprintf("%s/runs/%s", process.GetName(), runID),
 			StartTime: startTime,
+			EndTime:   endTime,
 			State:     lineagepb.Run_COMPLETED,
 		},
 	}
@@ -115,6 +114,7 @@ func setupDatalineageResources(t *testing.T, ctx context.Context, client *lineag
 		LineageEvent: &lineagepb.LineageEvent{
 			Name:      fmt.Sprintf("%s/lineageEvents/%s", run.GetName(), eventID),
 			StartTime: startTime,
+			EndTime:   endTime,
 			Links: []*lineagepb.EventLink{
 				{
 					Source: &lineagepb.EntityReference{FullyQualifiedName: sourceFQN},
@@ -130,15 +130,17 @@ func setupDatalineageResources(t *testing.T, ctx context.Context, client *lineag
 
 	// Teardown function
 	teardown := func(t *testing.T) {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
 		deleteProcessReq := &lineagepb.DeleteProcessRequest{
 			Name: process.GetName(),
 		}
-		op, err := client.DeleteProcess(ctx, deleteProcessReq)
+		op, err := client.DeleteProcess(cleanupCtx, deleteProcessReq)
 		if err != nil {
 			t.Errorf("Failed to delete process %s: %v", process.GetName(), err)
 			return
 		}
-		if err := op.Wait(ctx); err != nil {
+		if err := op.Wait(cleanupCtx); err != nil {
 			t.Logf("Warning: Failed to wait for delete process %s: %v", process.GetName(), err)
 		}
 	}
@@ -165,7 +167,7 @@ func TestDatalineageToolEndpoints(t *testing.T) {
 	sourceConfig := getDatalineageVars(t)
 	project := sourceConfig["project"].(string)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	args := []string{"--enable-api"}
@@ -208,8 +210,8 @@ func TestDatalineageToolEndpoints(t *testing.T) {
 		"direction": "UPSTREAM",
 	}
 	t.Log("Polling search lineage index for the new link with exponential backoff...")
-	// Poll up to 5 minutes for eventual consistency
-	pollTimeout := 5 * time.Minute
+	// Poll up to 90 seconds for eventual consistency
+	pollTimeout := 90 * time.Second
 	links, err := pollSearchLineage(t, "my-datalineage-search-tool", reqBody, sourceFQN, targetFQN, pollTimeout)
 	if err != nil {
 		t.Fatalf("failed to find the link in search index within %s timeout: %v", pollTimeout, err)
@@ -234,8 +236,8 @@ func pollSearchLineage(t *testing.T, toolName string, reqBody map[string]any, wa
 			bytes.NewBuffer(reqBytes),
 		)
 		if err == nil {
-			defer resp.Body.Close()
 			bodyBytes, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
 			if resp.StatusCode == 200 {
 				var result map[string]interface{}
 				if err := json.Unmarshal(bodyBytes, &result); err == nil {
@@ -394,9 +396,9 @@ func runDatalineageSearchWithProcessDetailsTest(t *testing.T, sourceFQN, targetF
 				time.Sleep(delay)
 				continue
 			}
-			defer resp.Body.Close()
 
 			bodyBytes, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
 			if resp.StatusCode != 200 {
 				t.Logf("  Server returned HTTP %d: %s", resp.StatusCode, string(bodyBytes))
 				time.Sleep(delay)
